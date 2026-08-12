@@ -147,13 +147,8 @@ function parseVlessUrl(url) {
             }
 
             if (host) {
-                xhttpOpts.host = host;
-
-                // 保留原有兼容逻辑
-                xhttpOpts.headers = {
-                    Host: host
-                };
-            }
+               xhttpOpts.host = host;
+           }
 
             if (mode) {
                 xhttpOpts.mode = mode;
