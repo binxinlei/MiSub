@@ -130,6 +130,65 @@ export function convertClashProxyToUrl(proxy) {
                 if (wsOpts.path) params.push(`path=${encodeURIComponent(wsOpts.path)}`);
                 if (wsOpts.headers?.Host) params.push(`host=${encodeURIComponent(wsOpts.headers.Host)}`);
             }
+            // XHTTP 配置
+const xhttpOpts = proxy['xhttp-opts'] || proxy.xhttpOpts;
+
+if (proxy.network === 'xhttp' && xhttpOpts) {
+    if (xhttpOpts.path) {
+        params.push(`path=${encodeURIComponent(xhttpOpts.path)}`);
+    }
+
+    if (xhttpOpts.host) {
+        params.push(`host=${encodeURIComponent(xhttpOpts.host)}`);
+    }
+
+    if (xhttpOpts.mode) {
+        params.push(`mode=${encodeURIComponent(xhttpOpts.mode)}`);
+    }
+
+    // XHTTP extra
+    const extra = {};
+
+    if (xhttpOpts['x-padding-obfs-mode'] !== undefined) {
+        extra.xPaddingObfsMode = xhttpOpts['x-padding-obfs-mode'];
+    }
+
+    if (xhttpOpts['x-padding-method'] !== undefined) {
+        extra.xPaddingMethod = xhttpOpts['x-padding-method'];
+    }
+
+    if (xhttpOpts['x-padding-placement'] !== undefined) {
+        extra.xPaddingPlacement = xhttpOpts['x-padding-placement'];
+    }
+
+    if (xhttpOpts['x-padding-header'] !== undefined) {
+        extra.xPaddingHeader = xhttpOpts['x-padding-header'];
+    }
+
+    if (xhttpOpts['x-padding-key'] !== undefined) {
+        extra.xPaddingKey = xhttpOpts['x-padding-key'];
+    }
+
+    if (xhttpOpts['x-padding-bytes'] !== undefined) {
+        extra.xPaddingBytes = xhttpOpts['x-padding-bytes'];
+    }
+
+    if (xhttpOpts['no-grpc-header'] !== undefined) {
+        extra.noGRPCHeader = xhttpOpts['no-grpc-header'];
+    }
+
+    if (
+        xhttpOpts.headers &&
+        typeof xhttpOpts.headers === 'object' &&
+        !Array.isArray(xhttpOpts.headers)
+    ) {
+        extra.headers = xhttpOpts.headers;
+    }
+
+    if (Object.keys(extra).length > 0) {
+        params.push(`extra=${encodeURIComponent(JSON.stringify(extra))}`);
+    }
+}          
             const grpcOpts = proxy.grpcOpts || proxy['grpc-opts'];
             if (grpcOpts) {
                 if (grpcOpts['grpc-service-name']) params.push(`serviceName=${encodeURIComponent(grpcOpts['grpc-service-name'])}`);
