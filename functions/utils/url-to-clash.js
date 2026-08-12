@@ -133,17 +133,236 @@ function parseVlessUrl(url) {
             }
         }
         
-        // xHTTP 配置 (Loon 3.0+ / Xray 1.8.7+)
+       // XHTTP 配置 (Xray / Mihomo)
         if (network === 'xhttp') {
             const xhttpOpts = {};
+
+            // 基础 XHTTP 参数
             const path = params.get('xhttp-path') || params.get('path');
             const host = params.get('xhttp-host') || params.get('host') || params.get('sni');
-            if (path) xhttpOpts.path = path;
+            const mode = params.get('mode');
+
+            if (path) {
+                xhttpOpts.path = path;
+            }
+
             if (host) {
                 xhttpOpts.host = host;
-                xhttpOpts.headers = { Host: host };
+
+                // 保留原有兼容逻辑
+                xhttpOpts.headers = {
+                    Host: host
+                };
             }
-            if (params.get('mode')) xhttpOpts.mode = params.get('mode');
+
+            if (mode) {
+                xhttpOpts.mode = mode;
+            }
+          
+            const extraRaw = params.get('extra');
+
+            if (extraRaw) {
+                try {
+                    const extra = JSON.parse(extraRaw);
+
+                    if (extra && typeof extra === 'object' && !Array.isArray(extra)) {
+                     
+                        if (typeof extra.xPaddingObfsMode === 'boolean') {
+                            xhttpOpts['x-padding-obfs-mode'] =
+                                extra.xPaddingObfsMode;
+                        }
+
+                        if (extra.xPaddingMethod !== undefined) {
+                            xhttpOpts['x-padding-method'] =
+                                extra.xPaddingMethod;
+                        }
+
+                        if (extra.xPaddingPlacement !== undefined) {
+                            xhttpOpts['x-padding-placement'] =
+                                extra.xPaddingPlacement;
+                        }
+
+                        if (extra.xPaddingHeader !== undefined) {
+                            xhttpOpts['x-padding-header'] =
+                                extra.xPaddingHeader;
+                        }
+
+                        if (extra.xPaddingKey !== undefined) {
+                            xhttpOpts['x-padding-key'] =
+                                extra.xPaddingKey;
+                        }
+
+                        if (extra.xPaddingBytes !== undefined) {
+                            xhttpOpts['x-padding-bytes'] =
+                                extra.xPaddingBytes;
+                        }
+              
+                        if (
+                            extra.headers &&
+                            typeof extra.headers === 'object' &&
+                            !Array.isArray(extra.headers)
+                        ) {
+                            xhttpOpts.headers = {
+                                ...(xhttpOpts.headers || {}),
+                                ...extra.headers
+                            };
+                        }
+           
+                        if (typeof extra.noGRPCHeader === 'boolean') {
+                            xhttpOpts['no-grpc-header'] =
+                                extra.noGRPCHeader;
+                        }
+
+                
+                        if (
+                            extra.xmux &&
+                            typeof extra.xmux === 'object' &&
+                            !Array.isArray(extra.xmux)
+                        ) {
+                            const xmux = extra.xmux;
+                            const reuseSettings = {};
+
+                            if (xmux.maxConcurrency !== undefined) {
+                                reuseSettings['max-concurrency'] =
+                                    xmux.maxConcurrency;
+                            }
+
+                            if (xmux.maxConnections !== undefined) {
+                                reuseSettings['max-connections'] =
+                                    xmux.maxConnections;
+                            }
+
+                            if (xmux.cMaxReuseTimes !== undefined) {
+                                reuseSettings['c-max-reuse-times'] =
+                                    xmux.cMaxReuseTimes;
+                            }
+
+                            if (xmux.hMaxRequestTimes !== undefined) {
+                                reuseSettings['h-max-request-times'] =
+                                    xmux.hMaxRequestTimes;
+                            }
+
+                            if (xmux.hKeepAlivePeriod !== undefined) {
+                                reuseSettings['h-keep-alive-period'] =
+                                    xmux.hKeepAlivePeriod;
+                            }
+
+                            if (xmux.hMaxReusableSecs !== undefined) {
+                                reuseSettings['h-max-reusable-secs'] =
+                                    xmux.hMaxReusableSecs;
+                            }
+
+                            if (Object.keys(reuseSettings).length > 0) {
+                                xhttpOpts['reuse-settings'] = reuseSettings;
+                            }
+                        }
+
+                        if (
+                            extra.downloadSettings &&
+                            typeof extra.downloadSettings === 'object' &&
+                            !Array.isArray(extra.downloadSettings)
+                        ) {
+                            const ds = extra.downloadSettings;
+                            const downloadSettings = {};
+
+                            if (ds.path !== undefined) {
+                                downloadSettings.path = ds.path;
+                            }
+
+                            if (ds.host !== undefined) {
+                                downloadSettings.host = ds.host;
+                            }
+
+                            if (ds.server !== undefined) {
+                                downloadSettings.server = ds.server;
+                            }
+
+                            if (ds.port !== undefined) {
+                                downloadSettings.port = ds.port;
+                            }
+
+                            if (ds.tls !== undefined) {
+                                downloadSettings.tls = ds.tls;
+                            }
+
+                            if (ds.alpn !== undefined) {
+                                downloadSettings.alpn = ds.alpn;
+                            }
+
+                            if (
+                                ds.headers &&
+                                typeof ds.headers === 'object' &&
+                                !Array.isArray(ds.headers)
+                            ) {
+                                downloadSettings.headers = ds.headers;
+                            }
+
+                            if (ds.skipCertVerify !== undefined) {
+                                downloadSettings['skip-cert-verify'] =
+                                    ds.skipCertVerify;
+                            }
+
+                            if (ds.clientFingerprint !== undefined) {
+                                downloadSettings['client-fingerprint'] =
+                                    ds.clientFingerprint;
+                            }
+
+                            if (ds.privateKey !== undefined) {
+                                downloadSettings['private-key'] =
+                                    ds.privateKey;
+                            }
+
+                            if (
+                                ds.realityOpts &&
+                                typeof ds.realityOpts === 'object'
+                            ) {
+                                const realityOpts = {};
+
+                                if (ds.realityOpts.publicKey !== undefined) {
+                                    realityOpts['public-key'] =
+                                        ds.realityOpts.publicKey;
+                                }
+
+                                if (ds.realityOpts.shortId !== undefined) {
+                                    realityOpts['short-id'] =
+                                        ds.realityOpts.shortId;
+                                }
+
+                                if (ds.realityOpts.spiderX !== undefined) {
+                                    realityOpts['spider-x'] =
+                                        ds.realityOpts.spiderX;
+                                }
+
+                                if (Object.keys(realityOpts).length > 0) {
+                                    downloadSettings['reality-opts'] =
+                                        realityOpts;
+                                }
+                            }
+
+                            if (
+                                ds.echOpts &&
+                                typeof ds.echOpts === 'object'
+                            ) {
+                                downloadSettings['ech-opts'] =
+                                    ds.echOpts;
+                            }
+
+                            if (Object.keys(downloadSettings).length > 0) {
+                                xhttpOpts['download-settings'] =
+                                    downloadSettings;
+                            }
+                        }
+              
+                    }
+
+                } catch (e) {
+                    console.warn(
+                        '解析 VLESS XHTTP extra 失败:',
+                        e?.message || e
+                    );
+                }
+            }
+
             if (Object.keys(xhttpOpts).length > 0) {
                 proxy['xhttp-opts'] = xhttpOpts;
             }
