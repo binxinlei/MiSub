@@ -233,7 +233,6 @@ export function generateBuiltinClashConfig(nodeList, options = {}) {
             noRefs: true,
             quotingType: '"',
             forceQuotes: false
-            flowLevel: 2
         });
 
         // 最终清理，确保输出没有控制字符
