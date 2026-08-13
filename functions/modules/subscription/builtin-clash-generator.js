@@ -79,25 +79,7 @@ function stripInternalProxyFields(proxies) {
         return publicProxy;
     });
 }
-function dumpProxiesAsFlowYaml(proxies) {
-    if (!Array.isArray(proxies) || proxies.length === 0) {
-        return 'proxies: []';
-    }
 
-    const proxyLines = proxies.map(proxy => {
-        const proxyYaml = yaml.dump(proxy, {
-            flowLevel: 0,
-            lineWidth: -1,
-            noRefs: true,
-            quotingType: '"',
-            forceQuotes: false
-        }).trim();
-
-        return `  - ${proxyYaml}`;
-    });
-
-    return `proxies:\n${proxyLines.join('\n')}`;
-}
 /**
  * 为 Mihomo/Meta 生成链式代理节点。
  * 当前 Meta 内核不再支持 relay 策略组语义，应通过 dialer-proxy 让落地节点经由入口节点拨号。
@@ -245,24 +227,13 @@ export function generateBuiltinClashConfig(nodeList, options = {}) {
             'rules': clashRules
         };
 
-       // 先生成除 proxies 之外的完整 YAML
-const configWithoutProxies = {
-    ...config
-};
-delete configWithoutProxies.proxies;
-
-let yamlStr = yaml.dump(configWithoutProxies, {
-    indent: 2,
-    lineWidth: -1,
-    noRefs: true,
-    quotingType: '"',
-    forceQuotes: false
-});
-
-// 将单行 proxies 区块插入到 YAML 顶部
-const proxiesYaml = dumpProxiesAsFlowYaml(publicProxies);
-
-yamlStr = `${proxiesYaml}\n${yamlStr}`;
+        let yamlStr = yaml.dump(config, {
+            indent: 2,
+            lineWidth: -1,
+            noRefs: true,
+            quotingType: '"',
+            forceQuotes: false
+        });
 
         // 最终清理，确保输出没有控制字符
         return cleanControlChars(yamlStr);
