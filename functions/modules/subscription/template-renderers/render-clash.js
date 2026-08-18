@@ -4,6 +4,7 @@ import { normalizeUnifiedTemplateModel } from '../template-model.js';
 
 function mapGroupType(type) {
     const normalized = String(type || '').trim().toLowerCase();
+
     if (
         normalized === 'url-test' ||
         normalized === 'fallback' ||
@@ -12,6 +13,7 @@ function mapGroupType(type) {
     ) {
         return normalized;
     }
+
     return 'select';
 }
 
@@ -62,9 +64,6 @@ const ACL4SSR_IPCIDR_PROVIDER_FILES = new Set([
     'netflixip'
 ]);
 
-// ACL4SSR root list files that should stay as text providers
-// because their YAML provider is missing or does not preserve
-// the effective raw .list rule coverage.
 const ACL4SSR_ROOT_LIST_ONLY_FILES = new Set([
     'localareanetwork',
     'banad',
@@ -151,10 +150,7 @@ function getRuleProviderBehavior(providerUrl) {
                 .pathname
                 .split('/')
                 .pop()
-                ?.replace(
-                    /\.(yaml|yml|list|txt|conf)$/i,
-                    ''
-                ) || '';
+                ?.replace(/\.(yaml|yml|list|txt|conf)$/i, '') || '';
 
         if (
             ACL4SSR_IPCIDR_PROVIDER_FILES.has(
@@ -164,7 +160,7 @@ function getRuleProviderBehavior(providerUrl) {
             return 'ipcidr';
         }
     } catch {
-        // ignore invalid provider url shapes
+        // ignore invalid provider url
     }
 
     return 'classical';
@@ -196,18 +192,107 @@ function mapRule(rule, ruleProviderMap) {
 
 
 /**
+ * 将 JS 值转换成安全的 YAML Flow Scalar。
+ *
+ * 这里故意对所有字符串使用 JSON 双引号。
+ *
+ * 原因：
+ *   YAML Flow Map 中以下内容很容易产生兼容性问题：
+ *
+ *   {path: /proxyip=126.121.88.244:14496}
+ *
+ * 不同 YAML 解析器对于 Flow Context 下的 ":"、
+ * "#"、"?"、"["、"]" 等字符处理存在差异。
+ *
+ * JSON 字符串同时也是合法的 YAML 双引号字符串，
+ * 因此可以安全兼容 YAML 解析器。
+ */
+function flowScalar(value) {
+    if (value === null) {
+        return 'null';
+    }
+
+    if (typeof value === 'string') {
+        return JSON.stringify(value);
+    }
+
+    if (typeof value === 'boolean') {
+        return value ? 'true' : 'false';
+    }
+
+    if (typeof value === 'number') {
+        if (Number.isFinite(value)) {
+            return String(value);
+        }
+
+        return 'null';
+    }
+
+    return JSON.stringify(value);
+}
+
+
+/**
+ * 将任意 JS 对象安全转换为 YAML Flow Map。
+ *
+ * 例如：
+ *
+ * {
+ *   name: 'JP-CF电信-家宽',
+ *   type: 'vless',
+ *   xhttp-opts: {
+ *      path: '/proxyip=126.121.88.244:14496'
+ *   }
+ * }
+ *
+ * 转换成：
+ *
+ * {
+ *   "name": "JP-CF电信-家宽",
+ *   "type": "vless",
+ *   "xhttp-opts": {
+ *     "path": "/proxyip=126.121.88.244:14496"
+ *   }
+ * }
+ *
+ * 注意：
+ * YAML 的 Flow Map 不要求 key 必须不带引号。
+ * 这种写法是合法 YAML，并且兼容性更好。
+ */
+function objectToFlowYaml(value) {
+    if (value === null) {
+        return 'null';
+    }
+
+    if (typeof value !== 'object') {
+        return flowScalar(value);
+    }
+
+    if (Array.isArray(value)) {
+        return `[${value.map(item => objectToFlowYaml(item)).join(', ')}]`;
+    }
+
+    const entries = Object.entries(value);
+
+    const pairs = entries.map(([key, val]) => {
+        return `${JSON.stringify(key)}: ${objectToFlowYaml(val)}`;
+    });
+
+    return `{${pairs.join(', ')}}`;
+}
+
+
+/**
  * 专门生成 Clash proxies 部分。
  *
  * 目标：
  *
  * proxies:
- *   - {name: xxx, type: vless, server: xxx, xhttp-opts: {path: xxx, host: xxx}}
- *   - {name: xxx, type: trojan, server: xxx, ws-opts: {path: xxx, headers: {Host: xxx}}}
+ *   - {"name": "...", "type": "vless", ...}
  *
- * 1. 删除 MiSub 内部 metadata
- * 2. Proxy 本身使用 Flow Style
- * 3. xhttp-opts / ws-opts / headers 等嵌套对象也使用 Flow Style
- * 4. 每一个 Proxy 最终只占一行
+ * 不再使用 yaml.dump(flowLevel)
+ * 来生成 proxy，避免 js-yaml / Clash / Mihomo
+ * 在 Flow YAML 中对特殊字符解析不一致。
  */
 function dumpProxiesAsFlowYaml(proxies) {
     if (!Array.isArray(proxies) || proxies.length === 0) {
@@ -216,57 +301,58 @@ function dumpProxiesAsFlowYaml(proxies) {
 
     const lines = proxies.map(proxy => {
         if (!proxy || typeof proxy !== 'object') {
-            return `  - ${JSON.stringify(proxy)}`;
+            return `  - ${flowScalar(proxy)}`;
         }
 
-        // 删除 MiSub 内部 metadata
+        // metadata 是 MiSub 内部字段，不应该输出到 Clash proxy。
         const { metadata, ...publicProxy } = proxy;
 
-        /*
-         * flowLevel: 0
-         *
-         * 让整个 Proxy 以及其嵌套对象使用 Flow Style：
-         *
-         * {name: xxx, type: vless, xhttp-opts: {path: xxx, host: xxx}}
-         */
-        let value = yaml.dump(publicProxy, {
-            flowLevel: 0,
-            lineWidth: -1,
-            noRefs: true,
-            quotingType: '"',
-            forceQuotes: false
-        }).trim();
-
-        /*
-         * js-yaml 某些情况下可能因为内容较长而产生换行。
-         *
-         * 这里将换行转换为空格，确保：
-         *
-         * - 每一个 Proxy = 一行
-         *
-         * 同时不会改变 YAML Flow Style 的结构。
-         */
-        value = value
-            .replace(/\r?\n/g, ' ')
-            .replace(/[ \t]+/g, ' ')
-            .trim();
-
-        return `  - ${value}`;
+        return `  - ${objectToFlowYaml(publicProxy)}`;
     });
 
     return `proxies:\n${lines.join('\n')}`;
 }
 
 
+/**
+ * 将完整 Clash 配置转换成 YAML。
+ *
+ * proxies 不交给 yaml.dump。
+ *
+ * 先把 proxies 从 config 中拿出来，
+ * 其余配置正常使用 js-yaml。
+ */
+function dumpClashConfig(config) {
+    const {
+        proxies,
+        ...restConfig
+    } = config;
+
+    const restYaml = yaml.dump(restConfig, {
+        indent: 2,
+        lineWidth: -1,
+        noRefs: true,
+        quotingType: '"',
+        forceQuotes: false
+    });
+
+    const proxyYaml = dumpProxiesAsFlowYaml(proxies);
+
+    return `${restYaml}${proxyYaml}\n`;
+}
+
+
 export function renderClashFromTemplateModel(model) {
-    const normalizedModel = normalizeUnifiedTemplateModel(model);
+    const normalizedModel =
+        normalizeUnifiedTemplateModel(model);
 
     const ruleProviders = {};
     const ruleProviderMap = new Map();
     let providerCounter = 0;
 
     normalizedModel.rules.forEach(rule => {
-        const type = String(rule.type || '').toUpperCase();
+        const type =
+            String(rule.type || '').toUpperCase();
 
         if (
             type !== 'RULE-SET' ||
@@ -276,7 +362,8 @@ export function renderClashFromTemplateModel(model) {
             return;
         }
 
-        const providerUrl = toClashRuleProviderUrl(rule.value);
+        const providerUrl =
+            toClashRuleProviderUrl(rule.value);
 
         if (ruleProviderMap.has(providerUrl)) {
             return;
@@ -285,7 +372,8 @@ export function renderClashFromTemplateModel(model) {
         let nameHint = 'rs';
 
         try {
-            const urlPath = new URL(providerUrl).pathname;
+            const urlPath =
+                new URL(providerUrl).pathname;
 
             const fileName =
                 urlPath
@@ -302,184 +390,152 @@ export function renderClashFromTemplateModel(model) {
                     .toLowerCase();
             }
         } catch {
-            // ignore invalid provider url shapes
+            // ignore invalid provider url
         }
 
-        const providerName = `${nameHint}_${providerCounter++}`;
+        const providerName =
+            `${nameHint}_${providerCounter++}`;
 
-        ruleProviderMap.set(providerUrl, providerName);
+        ruleProviderMap.set(
+            providerUrl,
+            providerName
+        );
 
-        const usesTextList = /\.(list|txt)$/i.test(providerUrl);
+        const usesTextList =
+            /\.(list|txt)$/i.test(providerUrl);
 
         ruleProviders[providerName] = {
             type: 'http',
-            behavior: getRuleProviderBehavior(providerUrl),
+            behavior:
+                getRuleProviderBehavior(providerUrl),
             url: providerUrl,
-            path: `./ruleset/${providerName}.${usesTextList ? 'list' : 'yaml'}`,
+            path:
+                `./ruleset/${providerName}.${usesTextList ? 'list' : 'yaml'}`,
             interval: 86400,
-            ...(usesTextList ? { format: 'text' } : {})
+            ...(usesTextList
+                ? { format: 'text' }
+                : {})
         };
     });
 
 
-    /*
-     * 注意：
-     *
-     * 这里故意不把 normalizedModel.proxies
-     * 直接放进 config。
-     *
-     * 否则最后的 yaml.dump() 会把 Proxy 输出成：
-     *
-     * - name: xxx
-     *   type: vless
-     *   server: xxx
-     *
-     * 我们在下面单独生成 Flow Style。
-     */
     const config = {
         'mixed-port': 7890,
+
         'allow-lan': true,
+
         'mode': 'rule',
+
         'log-level': 'info',
+
         'external-controller': ':9090',
 
         'dns': {
             'enable': true,
+
             'listen': '0.0.0.0:1053',
+
             'default-nameserver': [
                 '223.5.5.5',
                 '1.1.1.1'
             ],
+
             'enhanced-mode': 'fake-ip',
-            'fake-ip-range': '198.18.0.1/16',
+
+            'fake-ip-range':
+                '198.18.0.1/16',
+
             'fake-ip-filter': [
                 '*.lan',
                 '*.localhost'
             ],
+
             'nameserver': [
                 'https://dns.alidns.com/dns-query',
                 'https://doh.pub/dns-query'
             ]
         },
 
-        // proxies 在下面单独生成
-        'proxies': undefined,
+        'proxies':
+            normalizedModel.proxies,
 
-        'proxy-groups': normalizedModel.groups
-            .filter(group =>
-                (Array.isArray(group.members) &&
-                    group.members.length > 0) ||
-                (Array.isArray(group.filters) &&
-                    group.filters.length > 0)
-            )
-            .map(group => {
-                return {
-                    name: group.name,
-                    type: mapGroupType(group.type),
-                    proxies: filterAutoSelectMembers(group),
-                    filter:
+        'proxy-groups':
+            normalizedModel.groups
+                .filter(group =>
+                    (
+                        Array.isArray(group.members) &&
+                        group.members.length > 0
+                    ) ||
+                    (
                         Array.isArray(group.filters) &&
                         group.filters.length > 0
-                            ? group.filters.join('|')
-                            : undefined,
-                    ...group.options
-                };
-            }),
+                    )
+                )
+                .map(group => {
+                    return {
+                        name: group.name,
+
+                        type:
+                            mapGroupType(group.type),
+
+                        proxies:
+                            filterAutoSelectMembers(group),
+
+                        filter:
+                            Array.isArray(group.filters) &&
+                            group.filters.length > 0
+                                ? group.filters.join('|')
+                                : undefined,
+
+                        ...group.options
+                    };
+                }),
 
         'rule-providers':
             Object.keys(ruleProviders).length > 0
                 ? ruleProviders
                 : undefined,
 
-        'rules': normalizedModel.rules
-            .map(rule => {
-                if (
-                    String(rule.type || '').toUpperCase() !==
-                        'RULE-SET' ||
-                    !rule.value
-                ) {
+        'rules':
+            normalizedModel.rules
+                .map(rule => {
+                    if (
+                        String(rule.type || '').toUpperCase() !==
+                            'RULE-SET' ||
+                        !rule.value
+                    ) {
+                        return mapRule(
+                            rule,
+                            ruleProviderMap
+                        );
+                    }
+
                     return mapRule(
-                        rule,
+                        {
+                            ...rule,
+                            value:
+                                toClashRuleProviderUrl(
+                                    rule.value
+                                )
+                        },
                         ruleProviderMap
                     );
-                }
-
-                return mapRule(
-                    {
-                        ...rule,
-                        value: toClashRuleProviderUrl(
-                            rule.value
-                        )
-                    },
-                    ruleProviderMap
-                );
-            })
-            .filter(Boolean),
+                })
+                .filter(Boolean),
 
         'profile': {
             'store-selected': true,
+
             'subscription-url':
-                normalizedModel.settings.managedConfigUrl ||
-                ''
+                normalizedModel.settings
+                    .managedConfigUrl || ''
         }
     };
 
 
-    /*
-     * 先按照原来的方式生成完整 Clash 配置。
-     *
-     * 这里不要修改。
-     */
-    let yamlStr = yaml.dump(config, {
-        indent: 2,
-        lineWidth: -1,
-        noRefs: true,
-        quotingType: '"',
-        forceQuotes: false
-    });
+    let yamlStr = dumpClashConfig(config);
 
-
-    /*
-     * 保留项目原来的 clashFix。
-     *
-     * 先处理普通 Clash 配置，
-     * 然后再插入我们特殊处理的 proxies。
-     */
     yamlStr = clashFix(yamlStr);
-
-
-    /*
-     * 单独生成 proxies。
-     */
-    const proxiesYaml = dumpProxiesAsFlowYaml(
-        normalizedModel.proxies
-    );
-
-
-    /*
-     * 把 proxies 插入到 proxy-groups 前面。
-     *
-     * 最终：
-     *
-     * proxies:
-     *   - {name: ..., type: ..., server: ...}
-     *
-     * proxy-groups:
-     *   ...
-     */
-    if (/^proxy-groups:/m.test(yamlStr)) {
-        yamlStr = yamlStr.replace(
-            /^proxy-groups:/m,
-            `${proxiesYaml}\nproxy-groups:`
-        );
-    } else {
-        /*
-         * 理论上正常配置一定有 proxy-groups。
-         * 如果没有，直接把 proxies 放到 YAML 最前面，
-         * 避免生成无效配置。
-         */
-        yamlStr = `${proxiesYaml}\n${yamlStr}`;
-    }
 
     return yamlStr;
 }
