@@ -4,12 +4,7 @@ import { normalizeUnifiedTemplateModel } from '../template-model.js';
 
 function mapGroupType(type) {
     const normalized = String(type || '').trim().toLowerCase();
-    if (
-        normalized === 'url-test' ||
-        normalized === 'fallback' ||
-        normalized === 'load-balance' ||
-        normalized === 'select'
-    ) {
+    if (normalized === 'url-test' || normalized === 'fallback' || normalized === 'load-balance' || normalized === 'select') {
         return normalized;
     }
     return 'select';
@@ -17,20 +12,11 @@ function mapGroupType(type) {
 
 function filterAutoSelectMembers(group) {
     const type = mapGroupType(group.type);
-    const members = Array.isArray(group.members)
-        ? group.members.filter(Boolean)
-        : [];
-
+    const members = Array.isArray(group.members) ? group.members.filter(Boolean) : [];
     if (!['url-test', 'fallback', 'load-balance'].includes(type)) {
         return members;
     }
-
-    return members.filter(
-        member =>
-            !['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'].includes(
-                String(member).toUpperCase()
-            )
-    );
+    return members.filter(member => !['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'].includes(String(member).toUpperCase()));
 }
 
 const ACL4SSR_ROOT_PROVIDER_FILES = new Set([
@@ -62,9 +48,8 @@ const ACL4SSR_IPCIDR_PROVIDER_FILES = new Set([
     'netflixip'
 ]);
 
-// ACL4SSR root list files that should stay as text providers
-// because their YAML provider is missing or does not preserve
-// the effective raw .list rule coverage.
+// ACL4SSR root list files that should stay as text providers because their YAML provider is missing
+// or does not preserve the effective raw .list rule coverage.
 const ACL4SSR_ROOT_LIST_ONLY_FILES = new Set([
     'localareanetwork',
     'banad',
@@ -76,65 +61,64 @@ const ACL4SSR_ROOT_LIST_ONLY_FILES = new Set([
     'unban'
 ]);
 
-function toClashRuleProviderUrl(sourceUrl) {
-    if (!/^https?:\/\//i.test(String(sourceUrl || ''))) {
-        return sourceUrl;
+// 解析用户提供的 DNS 覆写片段（支持 JSON 和 YAML），解析失败返回 null
+function parseDnsOverride(raw) {
+    if (!raw || typeof raw !== 'string' || !raw.trim()) return null;
+    try {
+        const trimmed = raw.trim();
+        let parsed;
+        if (/^\{/.test(trimmed)) {
+            parsed = JSON.parse(trimmed);
+        } else {
+            parsed = yaml.load(trimmed);
+        }
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            // 如果 YAML 解析结果包含 dns 顶层键，取 dns 的值
+            if (parsed.dns && typeof parsed.dns === 'object' && !Array.isArray(parsed.dns)) {
+                return parsed.dns;
+            }
+            return parsed;
+        }
+    } catch {
+        // 忽略解析错误，回退到默认
     }
+    return null;
+}
+
+// 合并用户 DNS 覆写：有覆写则完全替换，无覆写则用默认
+function mergeDnsConfig(defaultDns, override) {
+    if (!override) return defaultDns;
+    return override;
+}
+
+function toClashRuleProviderUrl(sourceUrl) {
+    if (!/^https?:\/\//i.test(String(sourceUrl || ''))) return sourceUrl;
 
     try {
         const url = new URL(sourceUrl);
-
-        if (!/raw\.githubusercontent\.com$/i.test(url.hostname)) {
-            return sourceUrl;
-        }
-
+        if (!/raw\.githubusercontent\.com$/i.test(url.hostname)) return sourceUrl;
         const pathParts = url.pathname.split('/').filter(Boolean);
         const owner = pathParts[0] || '';
         const repo = pathParts[1] || '';
+        if (owner.toLowerCase() !== 'acl4ssr' || repo.toLowerCase() !== 'acl4ssr') return sourceUrl;
+        if (!/\/Clash\/.*\.(list|txt)$/i.test(url.pathname)) return sourceUrl;
 
-        if (
-            owner.toLowerCase() !== 'acl4ssr' ||
-            repo.toLowerCase() !== 'acl4ssr'
-        ) {
-            return sourceUrl;
-        }
-
-        if (!/\/Clash\/.*\.(list|txt)$/i.test(url.pathname)) {
-            return sourceUrl;
-        }
-
-        const fileName =
-            url.pathname
-                .split('/')
-                .pop()
-                ?.replace(/\.(list|txt)$/i, '') || '';
-
-        if (
-            /\/Clash\/[^/]+\.(list|txt)$/i.test(url.pathname) &&
-            ACL4SSR_ROOT_LIST_ONLY_FILES.has(fileName.toLowerCase())
-        ) {
+        const fileName = url.pathname.split('/').pop()?.replace(/\.(list|txt)$/i, '') || '';
+        if (/\/Clash\/[^/]+\.(list|txt)$/i.test(url.pathname) && ACL4SSR_ROOT_LIST_ONLY_FILES.has(fileName.toLowerCase())) {
             return sourceUrl;
         }
 
         if (/\/Clash\/Ruleset\//i.test(url.pathname)) {
             url.pathname = url.pathname
-                .replace(
-                    /\/Clash\/Ruleset\//i,
-                    '/Clash/Providers/Ruleset/'
-                )
+                .replace(/\/Clash\/Ruleset\//i, '/Clash/Providers/Ruleset/')
                 .replace(/\.(list|txt)$/i, '.yaml');
-        } else if (
-            ACL4SSR_ROOT_PROVIDER_FILES.has(fileName.toLowerCase())
-        ) {
+        } else if (ACL4SSR_ROOT_PROVIDER_FILES.has(fileName.toLowerCase())) {
             url.pathname = url.pathname
                 .replace(/\/Clash\//i, '/Clash/Providers/')
                 .replace(/\.(list|txt)$/i, '.yaml');
         } else {
             url.pathname = url.pathname
-                .replace(
-                    /\/Clash\//i,
-                    '/Clash/Providers/Ruleset/'
-                )
+                .replace(/\/Clash\//i, '/Clash/Providers/Ruleset/')
                 .replace(/\.(list|txt)$/i, '.yaml');
         }
 
@@ -146,117 +130,25 @@ function toClashRuleProviderUrl(sourceUrl) {
 
 function getRuleProviderBehavior(providerUrl) {
     try {
-        const fileName =
-            new URL(providerUrl)
-                .pathname
-                .split('/')
-                .pop()
-                ?.replace(
-                    /\.(yaml|yml|list|txt|conf)$/i,
-                    ''
-                ) || '';
-
-        if (
-            ACL4SSR_IPCIDR_PROVIDER_FILES.has(
-                fileName.toLowerCase()
-            )
-        ) {
-            return 'ipcidr';
-        }
+        const fileName = new URL(providerUrl).pathname.split('/').pop()?.replace(/\.(yaml|yml|list|txt|conf)$/i, '') || '';
+        if (ACL4SSR_IPCIDR_PROVIDER_FILES.has(fileName.toLowerCase())) return 'ipcidr';
     } catch {
-        // ignore invalid provider url shapes
+        // ignore invalid provider url shapes and keep default behavior
     }
-
     return 'classical';
 }
 
 function mapRule(rule, ruleProviderMap) {
     const type = String(rule.type || '').toUpperCase();
-
-    if (!type) {
-        return null;
-    }
-
-    if (type === 'MATCH' || type === 'FINAL') {
-        return `MATCH,${rule.policy}`;
-    }
-
-    if (type === 'GEOIP') {
-        return `GEOIP,${rule.value || 'CN'},${rule.policy}`;
-    }
-
+    if (!type) return null;
+    if (type === 'MATCH' || type === 'FINAL') return `MATCH,${rule.policy}`;
+    if (type === 'GEOIP') return `GEOIP,${rule.value || 'CN'},${rule.policy}`;
     if (type === 'RULE-SET') {
         const providerName = ruleProviderMap.get(rule.value);
-
         return `RULE-SET,${providerName || rule.value},${rule.policy}`;
     }
-
     return `${type},${rule.value},${rule.policy}`;
 }
-
-
-/**
- * 专门生成 Clash proxies 部分。
- *
- * 目标：
- *
- * proxies:
- *   - {name: xxx, type: vless, server: xxx, xhttp-opts: {path: xxx, host: xxx}}
- *   - {name: xxx, type: trojan, server: xxx, ws-opts: {path: xxx, headers: {Host: xxx}}}
- *
- * 1. 删除 MiSub 内部 metadata
- * 2. Proxy 本身使用 Flow Style
- * 3. xhttp-opts / ws-opts / headers 等嵌套对象也使用 Flow Style
- * 4. 每一个 Proxy 最终只占一行
- */
-function dumpProxiesAsFlowYaml(proxies) {
-    if (!Array.isArray(proxies) || proxies.length === 0) {
-        return 'proxies: []';
-    }
-
-    const lines = proxies.map(proxy => {
-        if (!proxy || typeof proxy !== 'object') {
-            return `  - ${JSON.stringify(proxy)}`;
-        }
-
-        // 删除 MiSub 内部 metadata
-        const { metadata, ...publicProxy } = proxy;
-
-        /*
-         * flowLevel: 0
-         *
-         * 让整个 Proxy 以及其嵌套对象使用 Flow Style：
-         *
-         * {name: xxx, type: vless, xhttp-opts: {path: xxx, host: xxx}}
-         */
-        let value = yaml.dump(publicProxy, {
-            flowLevel: 0,
-            lineWidth: -1,
-            noRefs: true,
-            quotingType: '"',
-            forceQuotes: false
-        }).trim();
-
-        /*
-         * js-yaml 某些情况下可能因为内容较长而产生换行。
-         *
-         * 这里将换行转换为空格，确保：
-         *
-         * - 每一个 Proxy = 一行
-         *
-         * 同时不会改变 YAML Flow Style 的结构。
-         */
-        value = value
-            .replace(/\r?\n/g, ' ')
-            .replace(/[ \t]+/g, ' ')
-            .trim();
-
-        return `  - ${value}`;
-    });
-
-    return `proxies:\n${lines.join('\n')}`;
-}
-
 
 export function renderClashFromTemplateModel(model) {
     const normalizedModel = normalizeUnifiedTemplateModel(model);
@@ -267,50 +159,25 @@ export function renderClashFromTemplateModel(model) {
 
     normalizedModel.rules.forEach(rule => {
         const type = String(rule.type || '').toUpperCase();
-
-        if (
-            type !== 'RULE-SET' ||
-            !rule.value ||
-            !/^https?:\/\//i.test(rule.value)
-        ) {
-            return;
-        }
+        if (type !== 'RULE-SET' || !rule.value || !/^https?:\/\//i.test(rule.value)) return;
 
         const providerUrl = toClashRuleProviderUrl(rule.value);
-
-        if (ruleProviderMap.has(providerUrl)) {
-            return;
-        }
+        if (ruleProviderMap.has(providerUrl)) return;
 
         let nameHint = 'rs';
-
         try {
             const urlPath = new URL(providerUrl).pathname;
-
-            const fileName =
-                urlPath
-                    .split('/')
-                    .pop()
-                    ?.replace(
-                        /\.(yaml|yml|list|txt|conf)$/i,
-                        ''
-                    ) || '';
-
+            const fileName = urlPath.split('/').pop()?.replace(/\.(yaml|yml|list|txt|conf)$/i, '') || '';
             if (fileName) {
-                nameHint = fileName
-                    .replace(/[^a-zA-Z0-9]/g, '_')
-                    .toLowerCase();
+                nameHint = fileName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
             }
         } catch {
-            // ignore invalid provider url shapes
+            // ignore invalid provider url shapes and keep fallback name
         }
 
         const providerName = `${nameHint}_${providerCounter++}`;
-
         ruleProviderMap.set(providerUrl, providerName);
-
         const usesTextList = /\.(list|txt)$/i.test(providerUrl);
-
         ruleProviders[providerName] = {
             type: 'http',
             behavior: getRuleProviderBehavior(providerUrl),
@@ -321,115 +188,74 @@ export function renderClashFromTemplateModel(model) {
         };
     });
 
+    const dnsOverride = parseDnsOverride(normalizedModel.settings?.customDnsOverride);
 
-    /*
-     * 注意：
-     *
-     * 这里故意不把 normalizedModel.proxies
-     * 直接放进 config。
-     *
-     * 否则最后的 yaml.dump() 会把 Proxy 输出成：
-     *
-     * - name: xxx
-     *   type: vless
-     *   server: xxx
-     *
-     * 我们在下面单独生成 Flow Style。
-     */
+    const defaultDns = {
+        'enable': true,
+        'ipv6': true,
+        'enhanced-mode': 'fake-ip',
+        'fake-ip-range': '198.18.0.1/16',
+        'fake-ip-filter': [
+            'geosite:private',
+            'geosite:category-ntp'
+        ],
+        'use-hosts': false,
+        'use-system-hosts': false,
+        'nameserver': [
+            'https://1.1.1.1/dns-query',
+            'https://8.8.8.8/dns-query'
+        ],
+        'proxy-server-nameserver': [
+            'https://223.5.5.5/dns-query',
+            'https://223.6.6.6/dns-query'
+        ],
+        'nameserver-policy': {
+            'geosite:cn': [
+                'https://223.5.5.5/dns-query',
+                'https://223.6.6.6/dns-query'
+            ]
+        },
+        'respect-rules': true
+    };
+
     const config = {
         'mixed-port': 7890,
+        'socks-port': 7891,
         'allow-lan': true,
+        'bind-address': '*',
+        'ipv6': true,
         'mode': 'rule',
         'log-level': 'info',
         'external-controller': ':9090',
-
-        'dns': {
-            'enable': true,
-            'listen': '0.0.0.0:1053',
-            'default-nameserver': [
-                '223.5.5.5',
-                '1.1.1.1'
-            ],
-            'enhanced-mode': 'fake-ip',
-            'fake-ip-range': '198.18.0.1/16',
-            'fake-ip-filter': [
-                '*.lan',
-                '*.localhost'
-            ],
-            'nameserver': [
-                'https://dns.alidns.com/dns-query',
-                'https://doh.pub/dns-query'
-            ]
-        },
-
-        // proxies 在下面单独生成
-        'proxies': undefined,
-
+        'dns': mergeDnsConfig(defaultDns, dnsOverride),
+        'proxies': normalizedModel.proxies,
         'proxy-groups': normalizedModel.groups
             .filter(group =>
-                (Array.isArray(group.members) &&
-                    group.members.length > 0) ||
-                (Array.isArray(group.filters) &&
-                    group.filters.length > 0)
+                (Array.isArray(group.members) && group.members.length > 0) ||
+                (Array.isArray(group.filters) && group.filters.length > 0)
             )
             .map(group => {
                 return {
                     name: group.name,
                     type: mapGroupType(group.type),
                     proxies: filterAutoSelectMembers(group),
-                    filter:
-                        Array.isArray(group.filters) &&
-                        group.filters.length > 0
-                            ? group.filters.join('|')
-                            : undefined,
+                    filter: Array.isArray(group.filters) && group.filters.length > 0 ? group.filters.join('|') : undefined,
                     ...group.options
                 };
             }),
-
-        'rule-providers':
-            Object.keys(ruleProviders).length > 0
-                ? ruleProviders
-                : undefined,
-
-        'rules': normalizedModel.rules
-            .map(rule => {
-                if (
-                    String(rule.type || '').toUpperCase() !==
-                        'RULE-SET' ||
-                    !rule.value
-                ) {
-                    return mapRule(
-                        rule,
-                        ruleProviderMap
-                    );
-                }
-
-                return mapRule(
-                    {
-                        ...rule,
-                        value: toClashRuleProviderUrl(
-                            rule.value
-                        )
-                    },
-                    ruleProviderMap
-                );
-            })
-            .filter(Boolean),
-
+        'rule-providers': Object.keys(ruleProviders).length > 0 ? ruleProviders : undefined,
+        'rules': normalizedModel.rules.map(rule => {
+            if (String(rule.type || '').toUpperCase() !== 'RULE-SET' || !rule.value) {
+                return mapRule(rule, ruleProviderMap);
+            }
+            return mapRule({ ...rule, value: toClashRuleProviderUrl(rule.value) }, ruleProviderMap);
+        }).filter(Boolean),
         'profile': {
             'store-selected': true,
-            'subscription-url':
-                normalizedModel.settings.managedConfigUrl ||
-                ''
+            'subscription-url': normalizedModel.settings.managedConfigUrl || ''
         }
     };
 
-
-    /*
-     * 先按照原来的方式生成完整 Clash 配置。
-     *
-     * 这里不要修改。
-     */
     let yamlStr = yaml.dump(config, {
         indent: 2,
         lineWidth: -1,
@@ -437,49 +263,6 @@ export function renderClashFromTemplateModel(model) {
         quotingType: '"',
         forceQuotes: false
     });
-
-
-    /*
-     * 保留项目原来的 clashFix。
-     *
-     * 先处理普通 Clash 配置，
-     * 然后再插入我们特殊处理的 proxies。
-     */
     yamlStr = clashFix(yamlStr);
-
-
-    /*
-     * 单独生成 proxies。
-     */
-    const proxiesYaml = dumpProxiesAsFlowYaml(
-        normalizedModel.proxies
-    );
-
-
-    /*
-     * 把 proxies 插入到 proxy-groups 前面。
-     *
-     * 最终：
-     *
-     * proxies:
-     *   - {name: ..., type: ..., server: ...}
-     *
-     * proxy-groups:
-     *   ...
-     */
-    if (/^proxy-groups:/m.test(yamlStr)) {
-        yamlStr = yamlStr.replace(
-            /^proxy-groups:/m,
-            `${proxiesYaml}\nproxy-groups:`
-        );
-    } else {
-        /*
-         * 理论上正常配置一定有 proxy-groups。
-         * 如果没有，直接把 proxies 放到 YAML 最前面，
-         * 避免生成无效配置。
-         */
-        yamlStr = `${proxiesYaml}\n${yamlStr}`;
-    }
-
     return yamlStr;
 }
