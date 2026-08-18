@@ -194,18 +194,15 @@ function mapRule(rule, ruleProviderMap) {
 /**
  * 将 JS 值转换成安全的 YAML Flow Scalar。
  *
- * 这里故意对所有字符串使用 JSON 双引号。
+ * 所有字符串统一使用 JSON 双引号。
  *
- * 原因：
- *   YAML Flow Map 中以下内容很容易产生兼容性问题：
+ * 这样可以避免：
  *
- *   {path: /proxyip=126.121.88.244:14496}
+ * {path: /proxyip=126.121.88.244:14496}
  *
- * 不同 YAML 解析器对于 Flow Context 下的 ":"、
- * "#"、"?"、"["、"]" 等字符处理存在差异。
+ * 这类 Flow YAML 在部分 YAML 解析器中出现：
  *
- * JSON 字符串同时也是合法的 YAML 双引号字符串，
- * 因此可以安全兼容 YAML 解析器。
+ * yaml: line xx: did not find expected ',' or '}'
  */
 function flowScalar(value) {
     if (value === null) {
@@ -233,31 +230,29 @@ function flowScalar(value) {
 
 
 /**
- * 将任意 JS 对象安全转换为 YAML Flow Map。
+ * 将 JS 对象安全转换成 YAML Flow Map。
  *
  * 例如：
  *
  * {
- *   name: 'JP-CF电信-家宽',
- *   type: 'vless',
- *   xhttp-opts: {
- *      path: '/proxyip=126.121.88.244:14496'
- *   }
+ *     name: 'JP-CF电信-家宽',
+ *     type: 'vless',
+ *     server: '172.64.229.195',
+ *     xhttp-opts: {
+ *         path: '/proxyip=jp.william.us.ci'
+ *     }
  * }
  *
- * 转换成：
+ * 输出：
  *
  * {
- *   "name": "JP-CF电信-家宽",
- *   "type": "vless",
- *   "xhttp-opts": {
- *     "path": "/proxyip=126.121.88.244:14496"
- *   }
+ *     "name": "JP-CF电信-家宽",
+ *     "type": "vless",
+ *     "server": "172.64.229.195",
+ *     "xhttp-opts": {
+ *         "path": "/proxyip=jp.william.us.ci"
+ *     }
  * }
- *
- * 注意：
- * YAML 的 Flow Map 不要求 key 必须不带引号。
- * 这种写法是合法 YAML，并且兼容性更好。
  */
 function objectToFlowYaml(value) {
     if (value === null) {
@@ -269,7 +264,9 @@ function objectToFlowYaml(value) {
     }
 
     if (Array.isArray(value)) {
-        return `[${value.map(item => objectToFlowYaml(item)).join(', ')}]`;
+        return `[${value
+            .map(item => objectToFlowYaml(item))
+            .join(', ')}]`;
     }
 
     const entries = Object.entries(value);
@@ -285,14 +282,12 @@ function objectToFlowYaml(value) {
 /**
  * 专门生成 Clash proxies 部分。
  *
- * 目标：
+ * 输出格式：
  *
  * proxies:
  *   - {"name": "...", "type": "vless", ...}
  *
- * 不再使用 yaml.dump(flowLevel)
- * 来生成 proxy，避免 js-yaml / Clash / Mihomo
- * 在 Flow YAML 中对特殊字符解析不一致。
+ * metadata 不输出。
  */
 function dumpProxiesAsFlowYaml(proxies) {
     if (!Array.isArray(proxies) || proxies.length === 0) {
@@ -304,7 +299,7 @@ function dumpProxiesAsFlowYaml(proxies) {
             return `  - ${flowScalar(proxy)}`;
         }
 
-        // metadata 是 MiSub 内部字段，不应该输出到 Clash proxy。
+        // MiSub 内部 metadata 不输出到 Clash 节点
         const { metadata, ...publicProxy } = proxy;
 
         return `  - ${objectToFlowYaml(publicProxy)}`;
@@ -315,12 +310,26 @@ function dumpProxiesAsFlowYaml(proxies) {
 
 
 /**
- * 将完整 Clash 配置转换成 YAML。
+ * 生成完整 Clash YAML。
  *
- * proxies 不交给 yaml.dump。
+ * 重点：
  *
- * 先把 proxies 从 config 中拿出来，
- * 其余配置正常使用 js-yaml。
+ * 1. proxies 不使用 yaml.dump
+ * 2. proxies 使用安全的 Flow YAML
+ * 3. proxies 放回原来正常的位置
+ * 4. 默认顺序保持：
+ *
+ *    mixed-port
+ *    allow-lan
+ *    mode
+ *    log-level
+ *    external-controller
+ *    dns
+ *    proxies
+ *    proxy-groups
+ *    rule-providers
+ *    rules
+ *    profile
  */
 function dumpClashConfig(config) {
     const {
@@ -328,17 +337,120 @@ function dumpClashConfig(config) {
         ...restConfig
     } = config;
 
-    const restYaml = yaml.dump(restConfig, {
-        indent: 2,
-        lineWidth: -1,
-        noRefs: true,
-        quotingType: '"',
-        forceQuotes: false
-    });
+    /*
+     * 找到 proxy-groups 在配置中的位置。
+     *
+     * 我们要把 proxies 插入到 proxy-groups 之前，
+     * 而不是把 proxies 追加到 YAML 最后。
+     */
+    const entries = Object.entries(restConfig);
 
-    const proxyYaml = dumpProxiesAsFlowYaml(proxies);
+    const proxyGroupsIndex = entries.findIndex(
+        ([key]) => key === 'proxy-groups'
+    );
 
-    return `${restYaml}${proxyYaml}\n`;
+    /*
+     * 理论上 proxy-groups 一定存在。
+     *
+     * 如果不存在，则退化成：
+     *
+     * 其他配置
+     * proxies
+     */
+    if (proxyGroupsIndex === -1) {
+        const restYaml = yaml.dump(restConfig, {
+            indent: 2,
+            lineWidth: -1,
+            noRefs: true,
+            quotingType: '"',
+            forceQuotes: false
+        });
+
+        const proxyYaml =
+            dumpProxiesAsFlowYaml(proxies);
+
+        return `${restYaml}${proxyYaml}\n`;
+    }
+
+    /*
+     * proxy-groups 之前的配置。
+     *
+     * 例如：
+     *
+     * mixed-port
+     * allow-lan
+     * mode
+     * log-level
+     * external-controller
+     * dns
+     */
+    const beforeProxyGroups = Object.fromEntries(
+        entries.slice(0, proxyGroupsIndex)
+    );
+
+    /*
+     * proxy-groups 以及后面的配置。
+     */
+    const afterProxyGroups = Object.fromEntries(
+        entries.slice(proxyGroupsIndex)
+    );
+
+    /*
+     * 第一部分正常使用 js-yaml。
+     */
+    const beforeYaml = yaml.dump(
+        beforeProxyGroups,
+        {
+            indent: 2,
+            lineWidth: -1,
+            noRefs: true,
+            quotingType: '"',
+            forceQuotes: false
+        }
+    ).trimEnd();
+
+    /*
+     * proxies 使用我们自己的安全 Flow YAML。
+     */
+    const proxyYaml =
+        dumpProxiesAsFlowYaml(proxies);
+
+    /*
+     * proxy-groups 以及后面的内容继续交给 js-yaml。
+     */
+    const afterYaml = yaml.dump(
+        afterProxyGroups,
+        {
+            indent: 2,
+            lineWidth: -1,
+            noRefs: true,
+            quotingType: '"',
+            forceQuotes: false
+        }
+    ).trimEnd();
+
+    /*
+     * 最终顺序：
+     *
+     * before
+     * ↓
+     * proxies
+     * ↓
+     * proxy-groups
+     * ↓
+     * rule-providers
+     * ↓
+     * rules
+     * ↓
+     * profile
+     */
+    return [
+        beforeYaml,
+        proxyYaml,
+        afterYaml
+    ]
+        .filter(Boolean)
+        .join('\n') + '\n';
 }
 
 
@@ -456,6 +568,12 @@ export function renderClashFromTemplateModel(model) {
             ]
         },
 
+        /*
+         * proxies 保持在这里。
+         *
+         * dumpClashConfig() 会把它实际输出到
+         * proxy-groups 之前。
+         */
         'proxies':
             normalizedModel.proxies,
 
@@ -533,8 +651,12 @@ export function renderClashFromTemplateModel(model) {
     };
 
 
-    let yamlStr = dumpClashConfig(config);
+    let yamlStr =
+        dumpClashConfig(config);
 
+    /*
+     * 保留项目原来的 Clash 修正逻辑。
+     */
     yamlStr = clashFix(yamlStr);
 
     return yamlStr;
