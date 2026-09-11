@@ -449,19 +449,59 @@ function parseVlessUrl(url) {
  * @param {string} url - Trojan URL
  * @returns {Object|null} Clash 代理对象
  */
+/**
+ * 将 Trojan URL 转换为 Clash 代理对象
+ *
+ * 支持：
+ * - TCP
+ * - WebSocket
+ * - gRPC
+ * - XHTTP
+ * - TLS
+ * - SNI
+ * - ALPN
+ * - Fingerprint
+ * - XHTTP extra
+ * - xPadding
+ * - noGRPCHeader
+ * - headers
+ * - dialer-proxy
+ *
+ * @param {string} url - Trojan URL
+ * @returns {Object|null} Clash 代理对象
+ */
 function parseTrojanUrl(url) {
     try {
         // trojan://password@server:port?params#name
-        const body = url.substring(9); // 去掉 trojan://
-        const atIndex = body.indexOf('@');
-        if (atIndex === -1) return null;
+        const body = url.substring(9);
 
+        const atIndex = body.indexOf('@');
+
+        if (atIndex === -1) {
+            return null;
+        }
+
+        /*
+         * =========================
+         * 解析密码
+         * =========================
+         */
         let password = body.substring(0, atIndex);
+
         try {
             password = decodeURIComponent(password);
-        } catch { }
+        } catch {
+            // 保持原始密码
+        }
 
+
+        /*
+         * =========================
+         * 解析服务器地址和端口
+         * =========================
+         */
         let serverPart = body.substring(atIndex + 1);
+
         const queryIndex = serverPart.indexOf('?');
         const hashIndex = serverPart.indexOf('#');
 
@@ -471,10 +511,25 @@ function parseTrojanUrl(url) {
             serverPart = serverPart.substring(0, hashIndex);
         }
 
-        const { server, port } = parseHostPort(serverPart);
+        const { server, port } =
+            parseHostPort(serverPart);
+
+
+        /*
+         * =========================
+         * 解析 URL 参数
+         * =========================
+         */
         const params = parseQueryParams(url);
+
         const name = extractName(url);
 
+
+        /*
+         * =========================
+         * 创建基础 Trojan 节点
+         * =========================
+         */
         const proxy = {
             name: name || `Trojan-${server}`,
             type: 'trojan',
@@ -483,65 +538,885 @@ function parseTrojanUrl(url) {
             password
         };
 
-        // 网络类型
-        const network = params.get('type') || 'tcp';
+
+        /*
+         * =========================
+         * 网络类型
+         *
+         * tcp
+         * ws
+         * grpc
+         * xhttp
+         * =========================
+         */
+        const network =
+            params.get('type') || 'tcp';
+
         if (network !== 'tcp') {
             proxy.network = network;
         }
 
-        // WebSocket 配置
+
+        /*
+         * =========================
+         * WebSocket
+         * =========================
+         */
         if (network === 'ws') {
+
             const wsOpts = {};
-            if (params.get('path')) wsOpts.path = params.get('path');
-            if (params.get('host')) {
-                wsOpts.headers = { Host: params.get('host') };
+
+            if (params.get('path')) {
+                wsOpts.path =
+                    params.get('path');
             }
+
+            if (params.get('host')) {
+                wsOpts.headers = {
+                    Host: params.get('host')
+                };
+            }
+
             if (Object.keys(wsOpts).length > 0) {
                 proxy['ws-opts'] = wsOpts;
             }
         }
 
-        // gRPC 配置
-        if (network === 'grpc') {
-            const grpcOpts = {};
-            if (params.get('serviceName')) grpcOpts['grpc-service-name'] = params.get('serviceName');
-            if (params.get('mode')) grpcOpts['grpc-mode'] = params.get('mode');
-            if (Object.keys(grpcOpts).length > 0) {
-                proxy['grpc-opts'] = grpcOpts;
+
+        /*
+         * =========================
+         * XHTTP
+         *
+         * Trojan XHTTP 支持：
+         *
+         * type=xhttp
+         * path=
+         * host=
+         * mode=
+         * extra=
+         * =========================
+         */
+        if (network === 'xhttp') {
+
+            const xhttpOpts = {};
+
+
+            /*
+             * -------------------------
+             * 基础参数
+             * -------------------------
+             */
+
+            const path =
+                params.get('xhttp-path') ||
+                params.get('path');
+
+            const host =
+                params.get('xhttp-host') ||
+                params.get('host') ||
+                params.get('sni');
+
+            const mode =
+                params.get('mode');
+
+
+            if (path) {
+                xhttpOpts.path = path;
+            }
+
+
+            if (host) {
+                xhttpOpts.host = host;
+            }
+
+
+            if (mode) {
+                xhttpOpts.mode = mode;
+            }
+
+
+            /*
+             * =========================
+             * 解析 XHTTP extra
+             *
+             * 支持两种格式：
+             *
+             * 格式 1：
+             *
+             * {
+             *   "xPaddingObfsMode": true
+             * }
+             *
+             *
+             * 格式 2：
+             *
+             * {
+             *   "extra": {
+             *      "xPaddingObfsMode": true
+             *   }
+             * }
+             * =========================
+             */
+
+            const extraRaw =
+                params.get('extra');
+
+
+            if (extraRaw) {
+
+                try {
+
+                    let parsedExtra =
+                        JSON.parse(extraRaw);
+
+
+                    /*
+                     * 部分客户端：
+                     *
+                     * {
+                     *   "extra": {
+                     *      ...
+                     *   }
+                     * }
+                     *
+                     * 所以自动进入内部 extra。
+                     */
+                    if (
+                        parsedExtra &&
+                        typeof parsedExtra === 'object' &&
+                        !Array.isArray(parsedExtra) &&
+                        parsedExtra.extra &&
+                        typeof parsedExtra.extra === 'object' &&
+                        !Array.isArray(parsedExtra.extra)
+                    ) {
+
+                        parsedExtra =
+                            parsedExtra.extra;
+                    }
+
+
+                    /*
+                     * 确保是对象
+                     */
+                    if (
+                        parsedExtra &&
+                        typeof parsedExtra === 'object' &&
+                        !Array.isArray(parsedExtra)
+                    ) {
+
+
+                        /*
+                         * =========================
+                         * xPaddingObfsMode
+                         * =========================
+                         */
+                        if (
+                            typeof parsedExtra.xPaddingObfsMode ===
+                            'boolean'
+                        ) {
+
+                            xhttpOpts[
+                                'x-padding-obfs-mode'
+                            ] =
+                                parsedExtra.xPaddingObfsMode;
+                        }
+
+
+                        /*
+                         * =========================
+                         * xPaddingMethod
+                         * =========================
+                         */
+                        if (
+                            parsedExtra.xPaddingMethod !==
+                            undefined
+                        ) {
+
+                            xhttpOpts[
+                                'x-padding-method'
+                            ] =
+                                parsedExtra.xPaddingMethod;
+                        }
+
+
+                        /*
+                         * =========================
+                         * xPaddingPlacement
+                         * =========================
+                         */
+                        if (
+                            parsedExtra.xPaddingPlacement !==
+                            undefined
+                        ) {
+
+                            xhttpOpts[
+                                'x-padding-placement'
+                            ] =
+                                parsedExtra.xPaddingPlacement;
+                        }
+
+
+                        /*
+                         * =========================
+                         * xPaddingHeader
+                         * =========================
+                         */
+                        if (
+                            parsedExtra.xPaddingHeader !==
+                            undefined
+                        ) {
+
+                            xhttpOpts[
+                                'x-padding-header'
+                            ] =
+                                parsedExtra.xPaddingHeader;
+                        }
+
+
+                        /*
+                         * =========================
+                         * xPaddingKey
+                         * =========================
+                         */
+                        if (
+                            parsedExtra.xPaddingKey !==
+                            undefined
+                        ) {
+
+                            xhttpOpts[
+                                'x-padding-key'
+                            ] =
+                                parsedExtra.xPaddingKey;
+                        }
+
+
+                        /*
+                         * =========================
+                         * xPaddingBytes
+                         *
+                         * 例如：
+                         *
+                         * 100-1000
+                         * =========================
+                         */
+                        if (
+                            parsedExtra.xPaddingBytes !==
+                            undefined
+                        ) {
+
+                            xhttpOpts[
+                                'x-padding-bytes'
+                            ] =
+                                parsedExtra.xPaddingBytes;
+                        }
+
+
+                        /*
+                         * =========================
+                         * noGRPCHeader
+                         * =========================
+                         */
+                        if (
+                            typeof parsedExtra.noGRPCHeader ===
+                            'boolean'
+                        ) {
+
+                            xhttpOpts[
+                                'no-grpc-header'
+                            ] =
+                                parsedExtra.noGRPCHeader;
+                        }
+
+
+                        /*
+                         * =========================
+                         * headers
+                         *
+                         * 例如：
+                         *
+                         * {
+                         *   "Content-Type":
+                         *   "application/octet-stream"
+                         * }
+                         * =========================
+                         */
+                        if (
+                            parsedExtra.headers &&
+                            typeof parsedExtra.headers ===
+                            'object' &&
+                            !Array.isArray(
+                                parsedExtra.headers
+                            )
+                        ) {
+
+                            xhttpOpts.headers = {
+                                ...(
+                                    xhttpOpts.headers ||
+                                    {}
+                                ),
+                                ...parsedExtra.headers
+                            };
+                        }
+
+
+                        /*
+                         * =========================
+                         * xmux
+                         * =========================
+                         */
+                        if (
+                            parsedExtra.xmux &&
+                            typeof parsedExtra.xmux ===
+                            'object' &&
+                            !Array.isArray(
+                                parsedExtra.xmux
+                            )
+                        ) {
+
+                            const xmux =
+                                parsedExtra.xmux;
+
+                            const reuseSettings =
+                                {};
+
+
+                            if (
+                                xmux.maxConcurrency !==
+                                undefined
+                            ) {
+
+                                reuseSettings[
+                                    'max-concurrency'
+                                ] =
+                                    xmux.maxConcurrency;
+                            }
+
+
+                            if (
+                                xmux.maxConnections !==
+                                undefined
+                            ) {
+
+                                reuseSettings[
+                                    'max-connections'
+                                ] =
+                                    xmux.maxConnections;
+                            }
+
+
+                            if (
+                                xmux.cMaxReuseTimes !==
+                                undefined
+                            ) {
+
+                                reuseSettings[
+                                    'c-max-reuse-times'
+                                ] =
+                                    xmux.cMaxReuseTimes;
+                            }
+
+
+                            if (
+                                xmux.hMaxRequestTimes !==
+                                undefined
+                            ) {
+
+                                reuseSettings[
+                                    'h-max-request-times'
+                                ] =
+                                    xmux.hMaxRequestTimes;
+                            }
+
+
+                            if (
+                                xmux.hKeepAlivePeriod !==
+                                undefined
+                            ) {
+
+                                reuseSettings[
+                                    'h-keep-alive-period'
+                                ] =
+                                    xmux.hKeepAlivePeriod;
+                            }
+
+
+                            if (
+                                xmux.hMaxReusableSecs !==
+                                undefined
+                            ) {
+
+                                reuseSettings[
+                                    'h-max-reusable-secs'
+                                ] =
+                                    xmux.hMaxReusableSecs;
+                            }
+
+
+                            if (
+                                Object.keys(
+                                    reuseSettings
+                                ).length > 0
+                            ) {
+
+                                xhttpOpts[
+                                    'reuse-settings'
+                                ] =
+                                    reuseSettings;
+                            }
+                        }
+
+
+                        /*
+                         * =========================
+                         * downloadSettings
+                         *
+                         * 兼容 XHTTP 下载设置
+                         * =========================
+                         */
+                        if (
+                            parsedExtra.downloadSettings &&
+                            typeof parsedExtra.downloadSettings ===
+                            'object' &&
+                            !Array.isArray(
+                                parsedExtra.downloadSettings
+                            )
+                        ) {
+
+                            const ds =
+                                parsedExtra.downloadSettings;
+
+                            const downloadSettings =
+                                {};
+
+
+                            if (
+                                ds.path !== undefined
+                            ) {
+
+                                downloadSettings.path =
+                                    ds.path;
+                            }
+
+
+                            if (
+                                ds.host !== undefined
+                            ) {
+
+                                downloadSettings.host =
+                                    ds.host;
+                            }
+
+
+                            if (
+                                ds.server !== undefined
+                            ) {
+
+                                downloadSettings.server =
+                                    ds.server;
+                            }
+
+
+                            if (
+                                ds.port !== undefined
+                            ) {
+
+                                downloadSettings.port =
+                                    ds.port;
+                            }
+
+
+                            if (
+                                ds.tls !== undefined
+                            ) {
+
+                                downloadSettings.tls =
+                                    ds.tls;
+                            }
+
+
+                            if (
+                                ds.alpn !== undefined
+                            ) {
+
+                                downloadSettings.alpn =
+                                    ds.alpn;
+                            }
+
+
+                            if (
+                                ds.headers &&
+                                typeof ds.headers ===
+                                'object' &&
+                                !Array.isArray(
+                                    ds.headers
+                                )
+                            ) {
+
+                                downloadSettings.headers =
+                                    ds.headers;
+                            }
+
+
+                            if (
+                                ds.skipCertVerify !==
+                                undefined
+                            ) {
+
+                                downloadSettings[
+                                    'skip-cert-verify'
+                                ] =
+                                    ds.skipCertVerify;
+                            }
+
+
+                            if (
+                                ds.clientFingerprint !==
+                                undefined
+                            ) {
+
+                                downloadSettings[
+                                    'client-fingerprint'
+                                ] =
+                                    ds.clientFingerprint;
+                            }
+
+
+                            if (
+                                ds.privateKey !==
+                                undefined
+                            ) {
+
+                                downloadSettings[
+                                    'private-key'
+                                ] =
+                                    ds.privateKey;
+                            }
+
+
+                            if (
+                                ds.realityOpts &&
+                                typeof ds.realityOpts ===
+                                'object'
+                            ) {
+
+                                const realityOpts =
+                                    {};
+
+
+                                if (
+                                    ds.realityOpts.publicKey !==
+                                    undefined
+                                ) {
+
+                                    realityOpts[
+                                        'public-key'
+                                    ] =
+                                        ds.realityOpts.publicKey;
+                                }
+
+
+                                if (
+                                    ds.realityOpts.shortId !==
+                                    undefined
+                                ) {
+
+                                    realityOpts[
+                                        'short-id'
+                                    ] =
+                                        ds.realityOpts.shortId;
+                                }
+
+
+                                if (
+                                    ds.realityOpts.spiderX !==
+                                    undefined
+                                ) {
+
+                                    realityOpts[
+                                        'spider-x'
+                                    ] =
+                                        ds.realityOpts.spiderX;
+                                }
+
+
+                                if (
+                                    Object.keys(
+                                        realityOpts
+                                    ).length > 0
+                                ) {
+
+                                    downloadSettings[
+                                        'reality-opts'
+                                    ] =
+                                        realityOpts;
+                                }
+                            }
+
+
+                            if (
+                                ds.echOpts &&
+                                typeof ds.echOpts ===
+                                'object'
+                            ) {
+
+                                downloadSettings[
+                                    'ech-opts'
+                                ] =
+                                    ds.echOpts;
+                            }
+
+
+                            if (
+                                Object.keys(
+                                    downloadSettings
+                                ).length > 0
+                            ) {
+
+                                xhttpOpts[
+                                    'download-settings'
+                                ] =
+                                    downloadSettings;
+                            }
+                        }
+                    }
+
+                } catch (e) {
+
+                    console.warn(
+                        '解析 Trojan XHTTP extra 失败:',
+                        e?.message || e
+                    );
+                }
+            }
+
+
+            /*
+             * =========================
+             * 写入 xhttp-opts
+             * =========================
+             */
+            if (
+                Object.keys(xhttpOpts).length > 0
+            ) {
+
+                proxy['xhttp-opts'] =
+                    xhttpOpts;
             }
         }
 
-        // SNI (支持 sni 和 peer 两种参数名，Shadowrocket 使用 peer)
+
+        /*
+         * =========================
+         * gRPC
+         * =========================
+         */
+        if (network === 'grpc') {
+
+            const grpcOpts = {};
+
+
+            if (params.get('serviceName')) {
+
+                grpcOpts[
+                    'grpc-service-name'
+                ] =
+                    params.get('serviceName');
+            }
+
+
+            if (params.get('mode')) {
+
+                grpcOpts[
+                    'grpc-mode'
+                ] =
+                    params.get('mode');
+            }
+
+
+            if (
+                Object.keys(grpcOpts).length > 0
+            ) {
+
+                proxy['grpc-opts'] =
+                    grpcOpts;
+            }
+        }
+
+
+        /*
+         * =========================
+         * TLS
+         *
+         * Trojan 默认一般使用 TLS，
+         * 这里显式兼容：
+         *
+         * security=tls
+         * =========================
+         */
+        const security =
+            params.get('security');
+
+
+        if (
+            security === 'tls' ||
+            security === 'xtls'
+        ) {
+
+            proxy.tls = true;
+        }
+
+
+        /*
+         * 如果没有明确 security 参数，
+         * Trojan 默认仍使用 TLS。
+         */
+        if (
+            !security ||
+            security === 'tls'
+        ) {
+
+            proxy.tls = true;
+        }
+
+
+        /*
+         * =========================
+         * SNI
+         *
+         * 支持：
+         *
+         * sni
+         * peer
+         * =========================
+         */
         if (params.get('sni')) {
-            proxy.servername = params.get('sni');
-            proxy.sni = params.get('sni');
+
+            proxy.servername =
+                params.get('sni');
+
+            proxy.sni =
+                params.get('sni');
+
         } else if (params.get('peer')) {
-            proxy.servername = params.get('peer');
-            proxy.sni = params.get('peer');
+
+            proxy.servername =
+                params.get('peer');
+
+            proxy.sni =
+                params.get('peer');
         }
 
-        // Fingerprint
+
+        /*
+         * =========================
+         * Fingerprint
+         * =========================
+         */
         if (params.get('fp')) {
-            proxy['client-fingerprint'] = params.get('fp');
+
+            proxy['client-fingerprint'] =
+                params.get('fp');
         }
 
-        // Skip cert verify
-        if (params.get('allowInsecure') === '1') {
-            proxy['skip-cert-verify'] = true;
+
+        /*
+         * =========================
+         * ALPN
+         *
+         * 例如：
+         *
+         * alpn=h2
+         *
+         * 或：
+         *
+         * alpn=h2,http/1.1
+         * =========================
+         */
+        if (params.get('alpn')) {
+
+            proxy.alpn =
+                params
+                    .get('alpn')
+                    .split(',')
+                    .map(item =>
+                        item.trim()
+                    )
+                    .filter(Boolean);
         }
 
-        // [重要] dialer-proxy 链式代理
+
+        /*
+         * =========================
+         * Skip Certificate Verify
+         *
+         * 支持：
+         *
+         * allowInsecure=1
+         * insecure=1
+         * =========================
+         */
+        if (
+            params.get('allowInsecure') === '1' ||
+            params.get('insecure') === '1'
+        ) {
+
+            proxy['skip-cert-verify'] =
+                true;
+        }
+
+
+        /*
+         * =========================
+         * UDP
+         * =========================
+         */
+        if (
+            params.get('udp') === 'true' ||
+            params.get('udp') === '1'
+        ) {
+
+            proxy.udp = true;
+        }
+
+
+        /*
+         * =========================
+         * TFO
+         * =========================
+         */
+        if (
+            params.get('tfo') === 'true' ||
+            params.get('tfo') === '1'
+        ) {
+
+            proxy.tfo = true;
+        }
+
+
+        /*
+         * =========================
+         * dialer-proxy
+         * =========================
+         */
         if (params.get('dp')) {
-            proxy['dialer-proxy'] = params.get('dp');
+
+            proxy['dialer-proxy'] =
+                params.get('dp');
         }
+
 
         return proxy;
+
     } catch (e) {
-        console.error('解析 Trojan URL 失败:', e);
+
+        console.error(
+            '解析 Trojan URL 失败:',
+            e
+        );
+
         return null;
     }
 }
-
 /**
  * 将 VMess URL 转换为 Clash 代理对象
  * @param {string} url - VMess URL
